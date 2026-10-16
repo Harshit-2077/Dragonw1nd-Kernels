@@ -96,6 +96,13 @@ runs:
         rm -f ./ccache
 
         echo "[DEBUG] Ccache version : $(ccache --version)"
+
+        if ccache --help 2>&1 | grep -q 'depend_mode'; then
+          export CCACHE_DEPEND=true
+          echo "CCACHE_DEPEND=true" >> "${GITHUB_ENV}"
+        fi
+
+        echo -e "ccache configuration:\n$(ccache -p)"
         echo "::endgroup::"
 
     - name: Setup SWAP
