@@ -349,7 +349,19 @@ runs:
           fi
         fi
 
-        patch -p1 -i "${susfs_dir}/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+
+        if patch -p1 -s -N --dry-run -i "${susfs_dir}/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch" >/dev/null 2>&1; then
+          echo "Applying patch: 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}"
+          patch -p1 -N -i "${susfs_dir}/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        else
+          if [[ -f "${KERNEL_KIT}/kernel_patches/${CODENAME}-${OS_SHORT}/susfs/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch" ]]; then
+            echo "Applying fix susfs patch"
+            patch -p1 -N -i "${KERNEL_KIT}/kernel_patches/${CODENAME}-${OS_SHORT}/susfs/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+          else
+            echo "Failed to apply 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }} patch! "
+            exit 1
+          fi
+        fi
 
         # SUSFS's OPEN_REDIRECT code unconditionally calls VMA_PAD_START(), which
         # only exists on GKI branches that carry Google's page-size-migration
