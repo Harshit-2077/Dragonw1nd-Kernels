@@ -399,7 +399,7 @@ runs:
 
         set_localversion
 
-        ( cd "${OUT}" && echo "kernel_release=$(make "${MAKE_FLAGS[@]}" O="${OUT}" -s kernelrelease)" >> "${GITHUB_ENV}" )
+        ( cd "${OUT}" && echo "gki_kernel_release=$(make "${MAKE_FLAGS[@]}" O="${OUT}" -s kernelrelease)" >> "${GITHUB_ENV}" )
 
         set -x
         set_lto
@@ -487,6 +487,8 @@ runs:
           ( cd "${KERNEL_DIR}" && make "${MAKE_FLAGS[@]}" O="${OUT}" $(_configs) )
           set +x
           _line
+
+          ( cd "${OUT}" && echo "msm_kernel_release=$(make "${MAKE_FLAGS[@]}" O="${OUT}" -s kernelrelease)" >> "${GITHUB_ENV}" )
 
           set_lto
           _line
@@ -661,6 +663,13 @@ runs:
       shell: bash
       run: |
         echo "WARNING: Deleting build cache..." >&2
+
+        find "${OUT_DIR}/gki-kernel/modules_staging/lib/modules" -mindepth 1 -maxdepth 1 -type d ! -name "${gki_kernel_release}" -exec rm -rfv {} +
+
+        if [[ "${TREE}" == "mixed" ]]; then
+            find "${OUT_DIR}/msm-kernel/modules_staging/lib/modules" -mindepth 1 -maxdepth 1 -type d ! -name "${msm_kernel_release}" -exec rm -rfv {} +
+        fi
+
         gh cache delete cache-${{ env.CODENAME }}-${{ env.OS_SHORT }}-${{ inputs.optimize_level }}-${{ inputs.kernel_uname }}-${{ env.KERNEL_VERSION }} || true
 
     - name: Save build cache
@@ -1769,7 +1778,7 @@ runs:
           echo ""
           echo "> [!NOTE]"
           echo "> Model: ${{ env.PRODUCT }}"
-          echo "> Kernel Release: ${{ env.kernel_release }}"
+          echo "> Kernel Release: ${{ env.gki_kernel_release }}"
           echo ""
           echo "- KSUN Version: ${KSUVER:-unknown}"
           echo "- KSUN commit SHA: [${{ env.KSUN_COMMIT_SHA }}](https://github.com/KernelSU-Next/KernelSU-Next/commit/${{ env.KSUN_COMMIT_SHA }})"
