@@ -100,8 +100,13 @@ def collect_files(paths: list[str]) -> list[FileEntry]:
         if not os.path.isfile(path):
             print(f"::warning::[build_info] File not found, skipping: {path}", file=sys.stderr)
             continue
-        stem = os.path.splitext(os.path.basename(path))[0]
-        attach_id = "".join(c if c.isalnum() else "_" for c in stem)
+        # Not derived from the filename: Telegram requires InputRichMessageMedia.id
+        # to be 1-64 chars of [A-Za-z0-9_-], and zip names like
+        # AnyKernel3_<codename>-<os>_<opt>_<kver>_Next_<ksu>_SuSFS_<ver>.zip
+        # blow past 64 once susfs is enabled. An index is always valid and
+        # can't collide (the real filename is still shown via the embed's
+        # alt text and the uploaded file's own name)
+        attach_id = f"file{len(entries)}"
         entries.append(FileEntry(
             path=path,
             attach_id=attach_id,
