@@ -96,6 +96,13 @@ runs:
         rm -f ./ccache
 
         echo "[DEBUG] Ccache version : $(ccache --version)"
+
+        if ccache --help 2>&1 | grep -q 'depend_mode'; then
+          export CCACHE_DEPEND=true
+          echo "CCACHE_DEPEND=true" >> "${GITHUB_ENV}"
+        fi
+
+        echo -e "ccache configuration:\n$(ccache -p)"
         echo "::endgroup::"
 
     - name: Setup SWAP
@@ -219,6 +226,7 @@ runs:
         git clone --depth=1 https://github.com/nullptr-t-oss/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
         git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git
         git clone --depth=1 https://github.com/nullptr-t-oss/kernel_kit.git
+        # git clone --depth=1 https://github.com/Bouteillepleine/kernel_patches.git -b main bouton_kernel_patches
 
     - name: Setup Base Environment
       shell: bash
@@ -227,6 +235,7 @@ runs:
 
         WILD_KERNEL_PATCHES="${GITHUB_WORKSPACE}/kernel_patches"
         KERNEL_KIT="${GITHUB_WORKSPACE}/kernel_kit"
+        # BOUTON_KERNEL_PATCHES="${GITHUB_WORKSPACE}/bouton_kernel_patches"
         BUILD_CONFIG=${KERNEL_KIT}/device/${CODENAME}-${OS_SHORT}/build_config/build.config.${CODENAME}.${OS_SHORT}
         
 
@@ -257,6 +266,7 @@ runs:
 
         echo "WILD_KERNEL_PATCHES=${WILD_KERNEL_PATCHES}" >> "${GITHUB_ENV}"
         echo "KERNEL_KIT=${KERNEL_KIT}" >> "${GITHUB_ENV}"
+        # echo "BOUTON_KERNEL_PATCHES=${BOUTON_KERNEL_PATCHES}" >> "${GITHUB_ENV}"
         echo "BUILD_CONFIG=${BUILD_CONFIG}" >> "${GITHUB_ENV}"
         echo "MTIME_CACHE=${MTIME_CACHE}" >> "${GITHUB_ENV}"
         echo "DYNAMIC_CACHE_DIR=${DYNAMIC_CACHE_DIR}" >> "${GITHUB_ENV}"
@@ -351,43 +361,18 @@ runs:
           fi
         fi
 
-    - name: Export build-tools path
+    - name: Export kernel build-tools path
       shell: bash
       run: |
-        if [[ -d "${ROOT_DIR}/build/build-tools/path/linux-x86" ]]; then
-          echo "${ROOT_DIR}/build/build-tools/path/linux-x86" >> "${GITHUB_PATH}"
-        fi
-
-        if [[ -d "${ROOT_DIR}/prebuilts/kernel-build-tools/linux-x86/bin" ]]; then
-          echo "${ROOT_DIR}/prebuilts/kernel-build-tools/linux-x86/bin" >> "${GITHUB_PATH}"
-        elif [[ -d "${ROOT_DIR}/prebuilts/kernel-build-tools/linux_musl-x86/bin" ]]; then
-          echo "${ROOT_DIR}/prebuilts/kernel-build-tools/linux_musl-x86/bin" >> "${GITHUB_PATH}"
+        if [[ -d "${KERNEL_KIT}/bin/kernel/prebuilts/build-tools/linux_musl-x86/bin" ]]; then
+          echo "${KERNEL_KIT}/bin/kernel/prebuilts/build-tools/linux_musl-x86/bin" >> "${GITHUB_PATH}"
         else
-          echo "prebuilt bins not found in kplatform, cloning prebuilts from aosp"
-
-          mkdir -p "${ROOT_DIR}/build/build-tools"
-          cd "${ROOT_DIR}/build/build-tools" 
-          wget https://android.googlesource.com/kernel/prebuilts/build-tools/+archive/refs/heads/main-kernel.tar.gz
-          tar -xzf main-kernel.tar.gz
-          rm main-kernel.tar.gz
-
-          if [[ -d "${ROOT_DIR}/build/build-tools/linux-x86/bin" ]]; then
-            echo "${ROOT_DIR}/build/build-tools/linux-x86/bin" >> "${GITHUB_PATH}"
-          elif [[ -d "${ROOT_DIR}/build/build-tools/linux_musl-x86/bin" ]]; then
-            echo "${ROOT_DIR}/build/build-tools/linux_musl-x86/bin" >> "${GITHUB_PATH}"
+          if [[ -d "${KERNEL_KIT}/bin/kernel/prebuilts/build-tools/linux-x86/bin" ]]; then
+            echo "${KERNEL_KIT}/bin/kernel/prebuilts/build-tools/linux-x86/bin" >> "${GITHUB_PATH}"
           else
-            echo "::error:: couldn't find prebuilt bin path in aosp prebuilts"
+            echo "::error:: kernel build-tools not found in KERNEL_KIT!"
           fi
         fi
-
-    - name: Prioritize system coreutils over AOSP prebuilt toybox
-      shell: bash
-      run: |
-        # This should fix the following error when setting up Ksun :
-        # realpath: Unknown option 'relative-to=/home/runner/work/EmberHeart-Kernels/EmberHeart-Kernels/salami-oos16/kernel_platform/common/drivers' (see "realpath --help")
-        # ln: cannot create symbolic link from '' to 'kernelsu': No such file or directory
-        #
-        echo "/usr/bin" >> "${GITHUB_PATH}"
 
     - name: Setup clang type
       if: ${{ inputs.clang_version != 'default' }}

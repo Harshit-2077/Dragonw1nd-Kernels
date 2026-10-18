@@ -138,8 +138,8 @@ runs:
 
         if [[ "${KSU_VERSION}" -gt 33095 ]] && [[ "${{ env.KERNEL_VERSION }}" == "6.12" ]]; then
           sed -i 's|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_KERNEL_DIR)/include/uapi|' Kbuild
-          sed -i 's|$(src)|$(abspath $(src))|' Kbuild
-          sed -i 's|$(srctree)/$(src)|$(abspath $(srctree)/$(src))|' Kbuild
+          sed -i 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
+          sed -i 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
         fi
 
         if [[ "${KSU_VERSION}" -lt 12884 ]]; then
@@ -182,20 +182,20 @@ runs:
         cd "${ROOT_DIR}"
         KERNEL_DIR="common"
 
-        shopt -s nullglob
-        cp -t "${KERNEL_DIR}" "${susfs_dir}/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH}.patch"
-        cp -t "${KERNEL_DIR}/fs" "${susfs_dir}/susfs4ksu/kernel_patches/fs/"*
-        cp -t "${KERNEL_DIR}/include/linux" "${susfs_dir}/kernel_patches/include/linux/"*
-        shopt -u nullglob
+        find "${susfs_dir}/kernel_patches/fs/" -maxdepth 1 -type f -exec cp -t "${KERNEL_DIR}/fs" {} +
+        find "${susfs_dir}/kernel_patches/include/linux/" -maxdepth 1 -type f -exec cp -t "${KERNEL_DIR}/include/linux" {} +
 
         susfs_version=$(grep '#define SUSFS_VERSION' ${ROOT_DIR}/${KERNEL_DIR}/include/linux/susfs.h | awk -F'"' '{print $2}')
         echo "SUSVER=${susfs_version}" >> ${GITHUB_ENV}
         echo "susfs_version=${susfs_version:-unknown}" >> ${GITHUB_OUTPUT}
         echo "SuSFS Version: ${susfs_version}"
 
+        _susfs_fix_patches="${WILD_KERNEL_PATCHES}/next/susfs_fix_patches"
+        echo "SusFS fix patches: ${_susfs_fix_patches}"
+
         # Function to compare semantic versions
         version_lte() {
-          [[ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]
+          [[ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]]
         }
 
         if version_lte "${susfs_version:1}" "1.5.12"; then
@@ -263,6 +263,17 @@ runs:
                 patch -p1 --forward -i "${WILD_KERNEL_PATCHES}/next/susfs_fix_patches/${susfs_version}/multi_sepolicy_fix.patch"
             fi
             ;;
+          "v2.2.0" | "v2.3.0")
+            patch -p1 --forward < "${susfs_dir}/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
+            for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
+              echo "Patching file: ${file} with fix_${file}.patch"
+              patch -p1 --forward < "${_susfs_fix_patches}/${susfs_version}/fix_${file}.patch"
+            done
+            echo "Patching Hook Mode!"
+            patch -p1 --forward < "${_susfs_fix_patches}/${susfs_version}/overwrite_hook_mode.patch"
+            echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
+            patch -p1 --forward < "${_susfs_fix_patches}/${susfs_version}/ksu_toolkit.patch"
+            ;;
           *)
             echo "::error::Unsupported SUSFS version: ${susfs_version}"
             exit 1
@@ -273,30 +284,34 @@ runs:
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
             sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
           fi
+
+          if ! grep -qxF 'extern void __fold_filemap_fixup_entry(struct vma_iterator *iter, unsigned long *end);' ./include/linux/page_size_compat.h; then
+            patch -p1 < "${WILD_KERNEL_PATCHES}/common/backports/fold_fixup_entries.patch"
+          fi
         fi
 
         # Fake kernel patch to fix failures
         fake_patched=0
+        fake_patched_expand=0
         if [[ "${{ env.ANDROID_RELEASE }}" = "android15" ]] && [[ "${{ env.KERNEL_VERSION }}" = "6.6" ]]; then
           if ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
             echo "nr_subpages Line not found. Fake Patching!"
             sed -i -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages \= __PAGE_SIZE \/ PAGE_SIZE;' -e '/int ret = 0, copied = 0;/a \\tpagemap_entry_t \*res = NULL;' ./fs/proc/task_mmu.c
             fake_patched=1
           fi
-        fi
 
-        if ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
+          if ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
             echo "#include <linux/dma-buf.h> Line not found. Adding missing header"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
-          
+
           if ! grep -qxF '#include <linux/zswap.h>' ./mm/memory.c; then
             echo "#include <linux/zswap.h> Line not found. Adding missing header"
             sed -i '/#include <linux\/sched\/sysctl.h>/a #include <linux\/zswap.h>' ./mm/memory.c
           fi
-          
+
           if grep -qF 'if (vma->vm_end > last_vma_end)' ./fs/proc/task_mmu.c && ! grep -qxF 'SUSFS_IS_INODE_SUS_MAP' ./fs/proc/task_mmu.c; then
-            echo "Temporarily expand the `last_vma_end` `if` block to fix a matching issue."
+            echo "Temporarily expand the last_vma_end if block to fix a matching issue."
             perl -i -0pe 's/\t\t\tif \(vma->vm_end > last_vma_end\)\n\t\t\t\tsmap_gather_stats\(vma, &mss, last_vma_end\);/\t\t\tif (vma->vm_end > last_vma_end) {\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t}/' ./fs/proc/task_mmu.c
             fake_patched_expand=1
           fi
@@ -327,17 +342,41 @@ runs:
             echo "vma_pages Line not found. Fake Patching!"
             fake_patched=1
           fi
-          
+
           if ! grep -qxF '#include <linux/dma-buf.h>' ./fs/proc/base.c; then
             echo "#include <linux/dma-buf.h> Line not found. Adding missing header"
             sed -i '/#include <linux\/cpufreq_times.h>/a #include <linux\/dma-buf.h>' ./fs/proc/base.c
           fi
         fi
 
-        patch -p1 -i 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch
+
+        if patch -p1 -s -N --dry-run -i "${susfs_dir}/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch" >/dev/null 2>&1; then
+          echo "Applying patch: 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}"
+          patch -p1 -N -i "${susfs_dir}/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        else
+          if [[ -f "${KERNEL_KIT}/kernel_patches/${CODENAME}-${OS_SHORT}/susfs/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch" ]]; then
+            echo "Applying fix susfs patch"
+            patch -p1 -N -i "${KERNEL_KIT}/kernel_patches/${CODENAME}-${OS_SHORT}/susfs/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+          else
+            echo "Failed to apply 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }} patch! "
+            exit 1
+          fi
+        fi
+
+        # SUSFS's OPEN_REDIRECT code unconditionally calls VMA_PAD_START(), which
+        # only exists on GKI branches that carry Google's page-size-migration
+        # feature (added to each android version's kernel/common branch at a
+        # different, sometime later, os_patch_level). Older os_patch_levels in
+        # our build matrix predate it, so fall back to a no-padding definition
+        # when the real header/macro isn't present. This is version-agnostic and
+        # a no-op wherever the real header already provides it.
+        if grep -q 'VMA_PAD_START(' ./fs/proc/task_mmu.c && ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' ./fs/proc/task_mmu.c; then
+          sed -i '\|#include "internal.h"|a\\n#undef VMA_PAD_START\n#ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
+          echo "Added VMA_PAD_START fallback definition to fs/proc/task_mmu.c"
+        fi
 
         # Revert Fake kernel patch
-        if [[ "$fake_patched_expand" = 1 ]]; then
+        if [[ "${fake_patched_expand}" = 1 ]]; then
           if [[ "${{ env.ANDROID_RELEASE }}" = "android15" ]] && [[ "${{ env.KERNEL_VERSION }}" = "6.6" ]]; then
             if grep -qF 'if (vma->vm_end > last_vma_end) {' ./fs/proc/task_mmu.c && ! grep -qxF 'SUSFS_IS_INODE_SUS_MAP' ./fs/proc/task_mmu.c; then
               perl -i -0pe 's/\t\t\tif \(vma->vm_end > last_vma_end\) \{\n\t\t\t\tsmap_gather_stats\(vma, &mss, last_vma_end\);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t\}/\t\t\tif (vma->vm_end > last_vma_end)\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);/' ./fs/proc/task_mmu.c
@@ -345,7 +384,7 @@ runs:
           fi
         fi
 
-        if [[ "$fake_patched" = 1 ]]; then
+        if [[ "${fake_patched}" = 1 ]]; then
           if [[ "${{ env.ANDROID_RELEASE }}" = "android15" ]] && [[ "${{ env.KERNEL_VERSION }}" = "6.6" ]]; then
             if grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
               echo "nr_subpages Line found. Revert Fake Patching!"
@@ -452,23 +491,28 @@ runs:
         echo "::group::Adding SUSFS configs..."
         cd "${ROOT_DIR}/common"
 
+        # Function to compare semantic versions
+        version_lte() {
+          [[ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]]
+        }
+
         ./scripts/config --file arch/arm64/configs/kernel.config \
           -e CONFIG_KSU_SUSFS \
-          -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
           -e CONFIG_KSU_SUSFS_SUS_PATH \
           -e CONFIG_KSU_SUSFS_SUS_MOUNT \
-          -e CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-          -e CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
           -e CONFIG_KSU_SUSFS_SUS_KSTAT \
-          -d CONFIG_KSU_SUSFS_SUS_OVERLAYFS \
-          -e CONFIG_KSU_SUSFS_TRY_UMOUNT \
-          -e CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
           -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
           -e CONFIG_KSU_SUSFS_ENABLE_LOG \
           -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
           -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
           -e CONFIG_KSU_SUSFS_OPEN_REDIRECT \
           -e CONFIG_KSU_SUSFS_SUS_MAP \
+          -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT \
+          -e CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+          -e CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+          -d CONFIG_KSU_SUSFS_SUS_OVERLAYFS \
+          -e CONFIG_KSU_SUSFS_TRY_UMOUNT \
+          -e CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
           -d CONFIG_KSU_SUSFS_SUS_SU
 
     - name: Add Oneplus BBR
@@ -482,6 +526,7 @@ runs:
           -e CONFIG_TCP_CONG_ADVANCED \
           -e CONFIG_TCP_CONG_BBR \
           -e CONFIG_TCP_CONG_BBR3 \
+          -e CONFIG_TCP_CONG_ROCCET \
           -e CONFIG_NET_SCH_FQ \
           -e CONFIG_NET_SCH_FQ_CODEL
 
@@ -688,59 +733,113 @@ runs:
         case "$BRANCH" in
           oneplus/sm8850|oneplus/sm8845)
             if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_a16-6.12.patch" >/dev/null 2>&1; then
-              echo "::note::Patch already applied. Skipping."
+              echo "::note:: Patch already applied. Skipping."
+            elif ! patch -p1 -s -N -F0 --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_a16-6.12.patch" >/dev/null 2>&1; then
+              echo "::note:: Couldn't apply patch. Skipping."
             else
               patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_a16-6.12.patch"
+              _sysvipc=true
             fi
             ;;
           oneplus/sm8550|oneplus/sm7550)
             if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_1_2_3.patch" >/dev/null 2>&1; then
-              echo "::note::Patch already applied. Skipping."
+              echo "::note:: Patch already applied. Skipping."
+            elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_1_2_3.patch" >/dev/null 2>&1; then
+              echo "::note:: Couldn't apply patch. Skipping."
             else
               patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_1_2_3.patch"
+              _sysvipc=true
             fi
             ;;
           oneplus/sm8450|oneplus/sm8475|oneplus/mt6895|oneplus/mt6983|oneplus/mt6789)
             if [[ "$ANDROID_RELEASE" = "android12" ]] && [[ "$KERNEL_VERSION" = "5.10" ]]; then
               if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_bypass_a16-6.12_below.patch" >/dev/null 2>&1; then
-                echo "::note::Patch already applied. Skipping."
+                echo "::note:: Patch already applied. Skipping."
+              elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_bypass_a16-6.12_below.patch" >/dev/null 2>&1; then
+                echo "::note:: Couldn't apply patch. Skipping."
               else
                 patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_bypass_a16-6.12_below.patch"
+                _sysvipc=true
               fi
 
               if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_abi_padding_for_posix_mqueue.patch" >/dev/null 2>&1; then
-                echo "::note::Patch already applied. Skipping."
+                echo "::note:: Patch already applied. Skipping."
+              elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_abi_padding_for_posix_mqueue.patch" >/dev/null 2>&1; then
+                echo "::note:: Couldn't apply patch. Skipping."
               else
                 patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_abi_padding_for_posix_mqueue.patch"
               fi
             else
 
               if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch" >/dev/null 2>&1; then
-                echo "::note::Patch already applied. Skipping."
+                echo "::note:: Patch already applied. Skipping."
+              elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch" >/dev/null 2>&1; then
+                echo "::note:: Couldn't apply patch. Skipping."
               else
                 patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch"
+                _sysvipc=true
               fi
 
             fi
             ;;
           los/sm8550)
             if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch" >/dev/null 2>&1; then
-                echo "::note::Patch already applied. Skipping."
+                echo "::note:: Patch already applied. Skipping."
+            elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch" >/dev/null 2>&1; then
+              echo "::note:: Couldn't apply patch. Skipping."
             else
-                patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch"
+              patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch"
+              _sysvipc=true
             fi
             ;;
           *)
             if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch" >/dev/null 2>&1; then
-              echo "::note::Patch already applied. Skipping."
+              echo "::note:: Patch already applied. Skipping."
+            elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch" >/dev/null 2>&1; then
+              echo "::note:: Couldn't apply patch. Skipping."
+
+              if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch" >/dev/null 2>&1; then
+                echo "::note:: Patch already applied. Skipping."
+              elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch" >/dev/null 2>&1; then
+                echo "::note:: Couldn't apply patch. Skipping."
+              else
+                patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch"
+                _sysvipc=true
+              fi
             else
               patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch"
+              _sysvipc=true
             fi
             ;;
         esac
 
+        # Add extra check in case soc specific case failed
+        if [[ "${_sysvipc:-false}" == "true" ]]; then
+          if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch" >/dev/null 2>&1; then
+            echo "::note:: Patch already applied. Skipping."
+          elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch" >/dev/null 2>&1; then
+            echo "::note:: Couldn't apply patch. Skipping."
+
+            if patch -R -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch" >/dev/null 2>&1; then
+              echo "::note:: Patch already applied. Skipping."
+            elif ! patch -p1 -s -N --dry-run -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch" >/dev/null 2>&1; then
+              echo "::note:: Couldn't apply patch. Skipping."
+            else
+              patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_3_4_5.patch"
+              _sysvipc=true
+            fi
+          else
+            patch -p1 -N -i "${WILD_KERNEL_PATCHES}/common/droidspaces/fix_sysvipc_kabi_6_7_8.patch"
+            _sysvipc=true
+          fi
+        fi
+
+        if [[ "${_sysvipc:-false}" == "true" ]]; then
+          ./scripts/config --file arch/arm64/configs/kernel.config -e CONFIG_SYSVIPC
+          echo "FEATURES=${FEATURES:-} ds" >> "${GITHUB_ENV}"
+        fi
+
         ./scripts/config --file arch/arm64/configs/kernel.config \
-                  -e CONFIG_SYSVIPC \
                   -e CONFIG_DEVTMPFS \
                   -e CONFIG_PID_NS \
                   -e CONFIG_POSIX_MQUEUE \
@@ -750,8 +849,6 @@ runs:
                   -e CONFIG_NETFILTER_XT_TARGET_LOG \
                   -e CONFIG_NETFILTER_XT_MATCH_RECENT \
                   -e CONFIG_USER_NS
-
-        echo "FEATURES=${FEATURES:-} ds" >> "${GITHUB_ENV}"
 
         echo "Other configs added ✅"
         echo "::endgroup::"
