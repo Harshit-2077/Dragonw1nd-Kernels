@@ -399,7 +399,7 @@ runs:
 
         set_localversion
 
-        ( cd "${OUT}" && echo "kernel_release=$(make "${MAKE_FLAGS[@]}" O="${OUT}" -s kernelrelease)" >> "${GITHUB_ENV}" )
+        ( cd "${OUT}" && echo "gki_kernel_release=$(make "${MAKE_FLAGS[@]}" O="${OUT}" -s kernelrelease)" >> "${GITHUB_ENV}" )
 
         set -x
         set_lto
@@ -488,6 +488,8 @@ runs:
           set +x
           _line
 
+          ( cd "${OUT}" && echo "msm_kernel_release=$(make "${MAKE_FLAGS[@]}" O="${OUT}" -s kernelrelease)" >> "${GITHUB_ENV}" )
+
           set_lto
           _line
 
@@ -536,7 +538,6 @@ runs:
         # Exports for external kernel modules
         export BOARD_PLATFORM="${SOC}"
         export TARGET_BOARD_PLATFORM="${SOC}"
-        export KERNEL_BUILD=n
 
         MAKE_FLAGS+=(
           KERNEL_SRC="${ROOT_DIR}/${KERNEL_DIR}"
@@ -588,6 +589,7 @@ runs:
             ../vendor/oplus/kernel/explorer
             ../vendor/qcom/opensource/video-driver
             ../vendor/qcom/opensource/graphics-kernel
+            ../vendor/qcom/opensource/touch-drivers
             ../vendor/qcom/opensource/dataipa/drivers/platform/msm
             ../vendor/qcom/opensource/datarmnet/core
             ../vendor/qcom/opensource/datarmnet-ext/aps
@@ -661,6 +663,13 @@ runs:
       shell: bash
       run: |
         echo "WARNING: Deleting build cache..." >&2
+
+        find "${OUT_DIR}/gki-kernel/modules_staging/lib/modules" -mindepth 1 -maxdepth 1 -type d ! -name "${gki_kernel_release}" -exec rm -rfv {} +
+
+        if [[ "${TREE}" == "mixed" ]]; then
+            find "${OUT_DIR}/msm-kernel/modules_staging/lib/modules" -mindepth 1 -maxdepth 1 -type d ! -name "${msm_kernel_release}" -exec rm -rfv {} +
+        fi
+
         gh cache delete cache-${{ env.CODENAME }}-${{ env.OS_SHORT }}-${{ inputs.optimize_level }}-${{ inputs.kernel_uname }}-${{ env.KERNEL_VERSION }} || true
 
     - name: Save build cache
@@ -746,8 +755,8 @@ runs:
         PREBUILTS="${KERNEL_KIT}/device/${CODENAME}-${OS_SHORT}/boot"
         IMAGE="${DIST_DIR}/Image${{ steps.build_config.outputs.kernel_compression }}"
 
-        if [[ -f "${ROOT_DIR}/tools/mkbootimg/mkbootimg.py" ]]; then
-          MKBOOTIMG="${ROOT_DIR}/tools/mkbootimg/mkbootimg.py"
+        if [[ -f "${KERNEL_KIT}/tools/mkbootimg/mkbootimg.py" ]]; then
+          MKBOOTIMG="${KERNEL_KIT}/tools/mkbootimg/mkbootimg.py"
         else
           MKBOOTIMG="mkbootimg"
         fi
@@ -872,7 +881,7 @@ runs:
           set -x
           # Allow build.config to ovveride default signing algorithm and boot signing key
           AVB_SIGN_BOOT_ALGO=${AVB_SIGN_BOOT_ALGO:-SHA256_RSA4096}
-          AVB_SIGN_BOOT_KEY=${AVB_SIGN_BOOT_KEY:-${KERNEL_PLATFORM}/tools/mkbootimg/gki/testdata/testkey_rsa4096.pem}
+          AVB_SIGN_BOOT_KEY=${AVB_SIGN_BOOT_KEY:-${KERNEL_KIT}/tools/mkbootimg/gki/testdata/testkey_rsa4096.pem}
 
           AVBTOOL_ARGS+=("--algorithm" "${AVB_SIGN_BOOT_ALGO}")
           AVBTOOL_ARGS+=("--key" "${AVB_SIGN_BOOT_KEY}")
@@ -1108,8 +1117,8 @@ runs:
       shell: bash
       run: |
         PREBUILTS="${KERNEL_KIT}/device/${CODENAME}-${OS_SHORT}/vendor_boot"
-        if [[ -f "${ROOT_DIR}/tools/mkbootimg/mkbootimg.py" ]]; then
-          MKBOOTIMG="${ROOT_DIR}/tools/mkbootimg/mkbootimg.py"
+        if [[ -f "${KERNEL_KIT}/tools/mkbootimg/mkbootimg.py" ]]; then
+          MKBOOTIMG="${KERNEL_KIT}/tools/mkbootimg/mkbootimg.py"
         else
           MKBOOTIMG="mkbootimg"
         fi
@@ -1375,7 +1384,7 @@ runs:
           # Allow build.config to ovveride default signing algorithm and vendor_boot signing key
           set -x
           AVB_SIGN_VENDOR_BOOT_ALGO=${AVB_SIGN_VENDOR_BOOT_ALGO:-SHA256_RSA4096}
-          AVB_SIGN_VENDOR_BOOT_KEY=${AVB_SIGN_VENDOR_BOOT_KEY:-${ROOT_DIR}/tools/mkbootimg/gki/testdata/testkey_rsa4096.pem}
+          AVB_SIGN_VENDOR_BOOT_KEY=${AVB_SIGN_VENDOR_BOOT_KEY:-${KERNEL_KIT}/tools/mkbootimg/gki/testdata/testkey_rsa4096.pem}
 
           AVBTOOL_ARGS+=("--algorithm" "${AVB_SIGN_VENDOR_BOOT_ALGO}")
           AVBTOOL_ARGS+=("--key" "${AVB_SIGN_VENDOR_BOOT_KEY}")
@@ -1769,7 +1778,7 @@ runs:
           echo ""
           echo "> [!NOTE]"
           echo "> Model: ${{ env.PRODUCT }}"
-          echo "> Kernel Release: ${{ env.kernel_release }}"
+          echo "> Kernel Release: ${{ env.gki_kernel_release }}"
           echo ""
           echo "- KSUN Version: ${KSUVER:-unknown}"
           echo "- KSUN commit SHA: [${{ env.KSUN_COMMIT_SHA }}](https://github.com/KernelSU-Next/KernelSU-Next/commit/${{ env.KSUN_COMMIT_SHA }})"
