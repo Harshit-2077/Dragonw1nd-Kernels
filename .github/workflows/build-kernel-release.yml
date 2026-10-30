@@ -29,7 +29,7 @@ on:
           - LOS_23_2
           - HOS
           - CUSTOM
-        default: OOS16_CUSTOM
+        default: LOS_23_2
       use_opt_patches:
         description: 'Do you want to add optimization patches in kernel?'
         required: true
@@ -39,7 +39,7 @@ on:
         description: 'Do you want to add susfs in kernel?'
         required: true
         type: boolean
-        default: true
+        default: false
       ksun_branch:
         description: 'Enter KernelSU Next Branch or commit hash (blank for stable tag)'
         required: true
@@ -68,11 +68,11 @@ on:
           - aosp-clang-r563880
           - aosp-clang-r563880c
           - aosp-clang-r574158
-        default: 'default'
+        default: 'aosp-clang-r574158'
       kernel_uname:
         description: 'Kernel uname'
         type: string
-        default: ''
+        default: 'Lucy'
       susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash'
         type: string
@@ -93,7 +93,7 @@ on:
         description: 'Do you want to compile vendor dlkm and boot partitions?'
         required: true
         type: boolean
-        default: false
+        default: true
       model:
         description: 'Select device to be built'
         required: true
@@ -106,7 +106,12 @@ on:
           - POCO_X6
           - REDMI_15
           - REDMI_12
-        default: OP11
+        default: POCO_F6
+      fix_extract_cert:
+        description: 'Patch extract-cert.c key_pass (needed for POCO_F6)'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   set-model:
@@ -293,6 +298,21 @@ jobs:
       - name: Kernel Modules modifications
         id: _modules
         uses: ./.github/kernel_modules
+
+      - name: Fix extract-cert key_pass
+        if: inputs.fix_extract_cert
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${{ github.workspace }}/peridot-los23.2/kernel_platform/common"
+          f="$ROOT/certs/extract-cert.c"
+          if [[ -f "$f" ]] && grep -q 'key_pass' "$f"; then
+            sed -i '/static.*key_pass/d' "$f"
+            sed -i '1i __attribute__((unused)) static const char *key_pass;' "$f"
+            echo "Patched $f"
+          else
+            echo "extract-cert.c missing or no key_pass, skipping"
+          fi
 
       - name: Start build
         id: build
