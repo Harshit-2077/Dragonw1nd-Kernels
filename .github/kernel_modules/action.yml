@@ -115,18 +115,6 @@ runs:
           shopt -u nullglob
         fi
 
-
-    - name: Add rtw88 modules
-      shell: bash
-      run: |
-        set -euo pipefail
-        if [[ "${TREE}" == "mixed" ]]; then
-          KERNEL_DIR="msm-kernel"
-        else
-          KERNEL_DIR="common"
-        fi
-        cd "${ROOT_DIR}/${KERNEL_DIR}/drivers/net/wireless/realtek/"
-        rm -rf rtw88
         git clone https://github.com/lwfinger/rtw88.git
         sed -i 's/$(CONFIG_RTW88)/m/g' Makefile
         sed -i '/^source "drivers\/net\/wireless\/realtek\/rtw88\/Kconfig"$/s/.*/ /' Kconfig
